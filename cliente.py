@@ -5,24 +5,60 @@ import base64
 import os
 import tkinter as tk
 from tkinter import simpledialog, filedialog, messagebox, scrolledtext
-import tkinter.ttk as ttk  # Importar TTK
+import tkinter.ttk as ttk
 from datetime import datetime
-import pyaudio  # <-- Para grabar audio
-import wave     # <-- Para guardar el archivo .wav
+import pyaudio
+import wave
 
-SERVER_IP = "127.0.0.1"   # cambiar si el servidor está en otra máquina
+SERVER_IP = "127.0.0.1"
 SERVER_PORT = 12345
 BUFFER_SIZE = 65535
-# --- CORRECCIÓN 1: Límite de archivo realista para UDP ---
-MAX_FILE_BYTES = 65 * 1024 
-# --- Constantes para la grabación de audio ---
+MAX_FILE_BYTES = 65 * 1024
+
 CHUNK = 1024
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
-# --- CORRECCIÓN 2: Tasa de muestreo más baja para grabar más tiempo ---
-RATE = 8000  # 8kHz (Calidad de teléfono, ~16KB/s)
+RATE = 8000
 TEMP_AUDIO_FILENAME = "temp_recording.wav"
-# --- Fin Constantes ---
+
+# Diccionario de stickers ASCII
+STICKERS = {
+    "oso": r'''
+╱|、
+(˚ˎ 。7  
+ |、˜〵          
+ じしˍ,)ノ
+''',
+    "gato": r'''
+ /\_/\
+( o.o )
+ > ^ <
+''',
+    "perro": r'''
+  / \__
+ (    @\____
+ /         O
+/   (_____/
+/_____/   U
+''',
+    "conejo": r'''
+ (\_/)
+ (.:.)
+(")(")
+''',
+    "corazon": r'''
+ ♥ ♥ 
+♥ ♥ ♥
+ ♥ ♥ 
+  ♥
+''',
+    "pulgar": r'''
+  👍
+''',
+    "carita": r'''
+ ( ͡° ͜ʖ ͡°)
+'''
+}
 
 def now_iso():
     return datetime.utcnow().isoformat() + "Z"
@@ -34,12 +70,10 @@ class ClienteChatUDP:
         if not self.username:
             return
 
-        # socket UDP (sin conectar)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(("", 0))
         self.server_addr = (SERVER_IP, SERVER_PORT)
 
-        # --- Paleta de colores ---
         self.colores = {
             "ventana": "#2c2f33",
             "panel": "#23272a",
@@ -51,16 +85,17 @@ class ClienteChatUDP:
             "error": "#f04747",
             "privado": "#5865f2",
             "info": "#4caf50",
-            "me_text": "#a0e0ff"
+            "me_text": "#a0e0ff",
+            "sticker": "#ffcc00",
+            "archivo": "#ff9966"
         }
         
-        # --- Definición de fuentes ---
         self.main_font = ("Arial", 15)
         self.header_font = ("Arial", 15, "bold")
         self.button_font = ("Arial", 12, "bold")
         self.status_font = ("Arial", 12)
+        self.sticker_font = ("Courier New", 10)
         
-        # --- Almacenes de estado ---
         self.room_histories = {}
         self.history_lock = threading.Lock()
         
@@ -70,23 +105,19 @@ class ClienteChatUDP:
         self.public_rooms = [] 
         self.current_users_in_room = [] 
         
-        # --- Atributos para grabación ---
         self.is_recording = False
         self.audio_frames = []
         self.audio_stream = None
         self.pyaudio_instance = pyaudio.PyAudio()
         
-        # registrar usuario con servidor
         self.send_json({"action": "register", "username": self.username, "timestamp": now_iso()})
 
-        # GUI
         self.sala_actual = None
         self.ventana = tk.Tk()
         self.ventana.title(f"Chat UDP - {self.username}")
-        self.ventana.geometry("1400x1000") 
+        self.ventana.geometry("1400x1000")
         self.crear_interfaz()
 
-        # listener en hilo
         self.running = True
         t = threading.Thread(target=self.listener_loop, daemon=True)
         t.start()
@@ -94,14 +125,9 @@ class ClienteChatUDP:
         self.ventana.protocol("WM_DELETE_WINDOW", self.salir)
         self.ventana.mainloop()
 
-    # ---
-    # Sección de GUI (Sin cambios)
-    # ---
-
     def crear_interfaz(self):
         self.ventana.config(bg=self.colores["ventana"])
 
-        # --- Configuración de Estilo TTK ---
         style = ttk.Style()
         try:
             style.theme_use("clam")
@@ -110,7 +136,6 @@ class ClienteChatUDP:
         style.configure("TButton", background=self.colores["boton"], foreground=self.colores["texto_boton"], font=self.button_font, relief="flat", padding=4)
         style.map("TButton", background=[("active", self.colores["privado"])])
 
-        # --- Panel de Salas (IZQUIERDA) ---
         self.frame_salas = tk.Frame(self.ventana, width=200, bg=self.colores["panel"])
         self.frame_salas.pack(side=tk.LEFT, fill=tk.Y)
         tk.Label(self.frame_salas, text="Salas", font=self.header_font, bg=self.colores["panel"], fg=self.colores["texto"]).pack(pady=8)
@@ -121,11 +146,9 @@ class ClienteChatUDP:
         ttk.Button(self.frame_salas, text="Actualizar Salas", command=self.actualizar_salas_publicas).pack(pady=5)
         ttk.Button(self.frame_salas, text="Salir App", command=self.salir).pack(pady=5)
 
-        # --- Panel de Archivos/Usuarios (DERECHA) ---
         self.frame_right = tk.Frame(self.ventana, width=250, bg=self.colores["panel"])
         self.frame_right.pack(side=tk.RIGHT, fill=tk.Y, padx=(5,0))
         
-        # Sub-Panel de Archivos
         frame_files_container = tk.Frame(self.frame_right, bg=self.colores["panel"], height=400)
         frame_files_container.pack(fill=tk.X, pady=5)
         tk.Label(frame_files_container, text="Archivos en Sala", font=self.header_font, bg=self.colores["panel"], fg=self.colores["texto"]).pack(pady=8)
@@ -138,7 +161,6 @@ class ClienteChatUDP:
         self.lista_files.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         ttk.Button(frame_files_container, text="Descargar Seleccionado", command=self.descargar_archivo_seleccionado).pack(pady=10)
 
-        # Sub-Panel de Usuarios
         frame_users_container = tk.Frame(self.frame_right, bg=self.colores["panel"])
         frame_users_container.pack(fill=tk.BOTH, expand=True, pady=5)
         tk.Label(frame_users_container, text="Usuarios en Sala", font=self.header_font, bg=self.colores["panel"], fg=self.colores["texto"]).pack(pady=8)
@@ -151,8 +173,6 @@ class ClienteChatUDP:
         self.lista_users.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         ttk.Button(frame_users_container, text="Iniciar Chat Privado", command=self.iniciar_chat_privado).pack(pady=10)
 
-
-        # --- Área de Mensajes (CENTRO) ---
         self.area_mensajes = scrolledtext.ScrolledText(self.ventana, state='disabled', wrap=tk.WORD, bg=self.colores["area_texto"], fg=self.colores["texto"], font=self.main_font)
         self.area_mensajes.pack(padx=8, pady=8, fill=tk.BOTH, expand=True)
         
@@ -161,8 +181,9 @@ class ClienteChatUDP:
         self.area_mensajes.tag_config("info", foreground=self.colores["info"])
         self.area_mensajes.tag_config("me", justify='right', foreground=self.colores["me_text"])
         self.area_mensajes.tag_config("other", justify='left')
+        self.area_mensajes.tag_config("sticker", font=self.sticker_font, foreground=self.colores["sticker"])
+        self.area_mensajes.tag_config("archivo", foreground=self.colores["archivo"])
 
-        # --- Barra de Entrada (INFERIOR) ---
         barra = tk.Frame(self.ventana, bg=self.colores["ventana"])
         barra.pack(fill=tk.X, padx=8, pady=6)
         self.entry_mensaje = tk.Entry(barra, bg=self.colores["area_texto"], fg=self.colores["texto"], insertbackground=self.colores["texto"], font=self.main_font)
@@ -170,24 +191,216 @@ class ClienteChatUDP:
         
         ttk.Button(barra, text="Enviar", command=self.enviar_mensaje).pack(side=tk.LEFT, padx=4)
         
-        ttk.Button(barra, text="🖼️ Sticker", command=self.enviar_sticker).pack(side=tk.LEFT, padx=4)
+        ttk.Button(barra, text="🖼️ Sticker", command=self.mostrar_menu_stickers).pack(side=tk.LEFT, padx=4)
+        ttk.Button(barra, text="📎 Archivo", command=self.enviar_archivo).pack(side=tk.LEFT, padx=4)
         self.btn_audio = ttk.Button(barra, text="🎙️ Grabar", command=self.toggle_audio_recording)
         self.btn_audio.pack(side=tk.LEFT, padx=4)
 
-        # --- Label de Estado ---
         self.lbl_estado = tk.Label(self.ventana, text="No conectado a ninguna sala", font=self.status_font, fg=self.colores["texto_secundario"], bg=self.colores["ventana"])
         self.lbl_estado.pack(padx=8, pady=2)
 
-    # ---
-    # Sección de Red y Manejo de Mensajes (Sin cambios)
-    # ---
+    def mostrar_menu_stickers(self):
+        if not self.sala_actual:
+            messagebox.showinfo("Info", "Únete a una sala primero.")
+            return
+            
+        menu_stickers = tk.Toplevel(self.ventana)
+        menu_stickers.title("Seleccionar Sticker")
+        menu_stickers.geometry("320x450") # Un poco más grande para mejor visibilidad
+        menu_stickers.config(bg=self.colores["panel"])
+        menu_stickers.transient(self.ventana)
+        menu_stickers.grab_set()
+        
+        tk.Label(menu_stickers, text="Selecciona un sticker:", 
+                 font=self.header_font, bg=self.colores["panel"], fg=self.colores["texto"]).pack(pady=10)
+        
+        # Frame contenedor principal
+        container_frame = tk.Frame(menu_stickers, bg=self.colores["panel"])
+        container_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # Canvas y Scrollbar
+        canvas = tk.Canvas(container_frame, bg=self.colores["panel"], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container_frame, orient="vertical", command=canvas.yview)
+        
+        # Frame interno que se moverá (scrollable)
+        scrollable_frame = tk.Frame(canvas, bg=self.colores["panel"])
+
+        # Función para actualizar el scrollregion
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        # Crear la ventana dentro del canvas
+        window_id = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+
+        # Ajustar el ancho del frame interno al cambiar el tamaño del canvas
+        def _configure_canvas(event):
+            canvas.itemconfig(window_id, width=event.width)
+        
+        canvas.bind("<Configure>", _configure_canvas)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Empaquetado (Scrollbar a la derecha, Canvas llena el resto)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        # --- LÓGICA DEL MOUSE WHEEL (RUEDA DEL RATÓN) ---
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+
+        # Bindings para activar scroll solo cuando el mouse está sobre el menú
+        def _bind_mouse(event):
+            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+            canvas.bind_all("<Button-4>", lambda e: canvas.yview_scroll(-1, "units"))
+            canvas.bind_all("<Button-5>", lambda e: canvas.yview_scroll(1, "units"))
+
+        def _unbind_mouse(event):
+            canvas.unbind_all("<MouseWheel>")
+            canvas.unbind_all("<Button-4>")
+            canvas.unbind_all("<Button-5>")
+
+        # Activar scroll cuando entras al canvas, desactivar cuando sales
+        menu_stickers.bind("<Enter>", _bind_mouse)
+        menu_stickers.bind("<Leave>", _unbind_mouse)
+        
+        # Asegurar limpieza al cerrar la ventana
+        def on_close():
+            _unbind_mouse(None)
+            menu_stickers.destroy()
+        menu_stickers.protocol("WM_DELETE_WINDOW", on_close)
+
+        for nombre, sticker in STICKERS.items():
+            frame_sticker = tk.Frame(scrollable_frame, bg=self.colores["panel"], bd=1, relief="flat")
+            frame_sticker.pack(fill=tk.X, pady=5, padx=5)
+            
+            # Título del sticker
+            tk.Label(frame_sticker, text=nombre.capitalize(), 
+                     font=("Arial", 11, "bold"), bg=self.colores["panel"], fg=self.colores["privado"]).pack(anchor="w")
+            
+            # El arte ASCII
+            lbl_sticker = tk.Label(frame_sticker, text=sticker, 
+                                  font=self.sticker_font, bg="#2f3136", 
+                                  fg=self.colores["sticker"], justify="left", padx=10, pady=5)
+            lbl_sticker.pack(anchor="center", fill="x", pady=2)
+            
+            # Botón enviar
+            ttk.Button(frame_sticker, text="Enviar", 
+                       command=lambda s=sticker, n=nombre, m=menu_stickers: self.enviar_sticker(s, n, m)).pack(fill="x", pady=2)
+            
+            # Separador visual
+            ttk.Separator(scrollable_frame, orient="horizontal").pack(fill="x", pady=5)
+            
+    def enviar_sticker(self, sticker_ascii, nombre_sticker, ventana_menu):
+        """Envía un sticker ASCII al chat"""
+        ventana_menu.destroy()
+        
+        obj = {}
+        if self.sala_actual.startswith("priv_"):
+            try:
+                user_pair = self.sala_actual.split('_', 1)[1]
+                user1, user2 = user_pair.split('-')
+                target = user2 if self.username == user1 else user1
+                
+                obj = {"action": "private", "username": self.username, "target": target,
+                       "msg_type": "sticker", "payload": {"nombre": nombre_sticker, "sticker": sticker_ascii}, "timestamp": now_iso()}
+            except Exception as e:
+                messagebox.showerror("Error", f"No se pudo enviar el sticker privado: {e}")
+                return
+            
+            clean_text = f"[PRIVADO] {self.username} envió un sticker: {nombre_sticker}\n{sticker_ascii}"
+            tags = ["privado", "me", "sticker"]
+            with self.history_lock:
+                if self.sala_actual not in self.room_histories:
+                    self.room_histories[self.sala_actual] = []
+                self.room_histories[self.sala_actual].append((clean_text, tags))
+            self.mostrar_mensaje(clean_text, tags)
+
+        else:
+            obj = {"action": "message", "username": self.username, "room": self.sala_actual,
+                   "msg_type": "sticker", "payload": {"nombre": nombre_sticker, "sticker": sticker_ascii}, "timestamp": now_iso()}
+            
+            clean_text = f"[{self.sala_actual}] {self.username} envió un sticker: {nombre_sticker}\n{sticker_ascii}"
+            tags = ["me", "sticker"]
+            with self.history_lock:
+                if self.sala_actual not in self.room_histories:
+                    self.room_histories[self.sala_actual] = []
+                self.room_histories[self.sala_actual].append((clean_text, tags))
+            self.mostrar_mensaje(clean_text, tags)
+        
+        self.send_json(obj)
+
+    def enviar_archivo(self):
+        """Envía un archivo regular al chat"""
+        if not self.sala_actual:
+            messagebox.showinfo("Info", "Únete a una sala primero.")
+            return
+            
+        path = filedialog.askopenfilename(title="Seleccionar archivo")
+        if not path:
+            return
+            
+        try:
+            size = os.path.getsize(path)
+            if size > MAX_FILE_BYTES:
+                messagebox.showerror("Error", f"Archivo demasiado grande ({size} bytes). Límite: {MAX_FILE_BYTES} bytes.")
+                return
+                
+            with open(path, "rb") as f:
+                raw = f.read()
+            b64 = base64.b64encode(raw).decode("utf-8")
+            payload = {"filename": os.path.basename(path), "data": b64}
+            obj = {}
+            
+            clean_text = ""
+            tags = ["archivo"]
+
+            if self.sala_actual.startswith("priv_"):
+                try:
+                    user_pair = self.sala_actual.split('_', 1)[1]
+                    user1, user2 = user_pair.split('-')
+                    target = user2 if self.username == user1 else user1
+
+                    obj = {"action": "private", "username": self.username, "target": target,
+                           "msg_type": "file", "payload": payload, "timestamp": now_iso()}
+                    
+                    clean_text = f"[PRIVADO] {self.username} envió un archivo: {os.path.basename(path)}"
+                    tags.extend(["privado", "me"])
+
+                except Exception as e:
+                    messagebox.showerror("Error", f"No se pudo enviar el archivo privado: {e}")
+                    return
+                
+            else:
+                obj = {"action": "message", "username": self.username, "room": self.sala_actual,
+                       "msg_type": "file", "payload": payload, "timestamp": now_iso()}
+                
+                clean_text = f"[{self.sala_actual}] {self.username} envió un archivo: {os.path.basename(path)}"
+                tags.append("me")
+            
+            # Eco local
+            with self.history_lock:
+                if self.sala_actual not in self.room_histories:
+                    self.room_histories[self.sala_actual] = []
+                self.room_histories[self.sala_actual].append((clean_text, tags))
+            self.mostrar_mensaje(clean_text, tags)
+            
+            # Añadir a la lista de archivos disponibles
+            file_key = f"[{'PRIV' if self.sala_actual.startswith('priv_') else self.sala_actual}] {self.username} - {os.path.basename(path)} ({datetime.now().strftime('%H:%M:%S')})"
+            with self.file_lock:
+                self.file_cache[file_key] = (os.path.basename(path), b64)
+            self.ventana.after(0, lambda: self.lista_files.insert(tk.END, file_key))
+            
+            self.send_json(obj)
+            
+        except Exception as e:
+            messagebox.showerror("Error al enviar archivo", f"Error: {e}")
 
     def send_json(self, obj):
         try:
             payload = json.dumps(obj).encode("utf-8")
             self.sock.sendto(payload, self.server_addr)
         except Exception as e:
-            # --- CORRECCIÓN: Mostrar error si el mensaje es demasiado largo ---
             if "Message too long" in str(e):
                 self.ventana.after(0, lambda: messagebox.showerror("Error de Envío", "El mensaje (archivo) es demasiado grande para enviar. Límite: 45 KB."))
             else:
@@ -234,7 +447,13 @@ class ClienteChatUDP:
             if mt in ("text", "emoji"):
                 text_to_store = f"[{room_key}] {frm}: {payload}\n"
             
-            elif mt in ("sticker", "audio"):
+            elif mt == "sticker":
+                nombre = payload.get("nombre", "Sticker")
+                sticker_ascii = payload.get("sticker", "")
+                text_to_store = f"[{room_key}] {frm} envió un sticker: {nombre}\n{sticker_ascii}"
+                tags_to_apply.append("sticker")
+            
+            elif mt in ("file", "audio"):
                 fn = payload.get("filename", f"{mt}_{int(datetime.utcnow().timestamp())}.dat")
                 b64 = payload.get("data")
                 file_key = f"[{room_key}] {frm} - {fn} ({datetime.now().strftime('%H:%M:%S')})"
@@ -243,8 +462,13 @@ class ClienteChatUDP:
                     self.file_cache[file_key] = (fn, b64)
                 
                 self.ventana.after(0, lambda: self.lista_files.insert(tk.END, file_key))
-                text_to_store = f"[{room_key}] {frm} envió un {mt}: {fn}\n"
-                tags_to_apply.append("info")
+                
+                if mt == "file":
+                    text_to_store = f"[{room_key}] {frm} envió un archivo: {fn}\n"
+                    tags_to_apply.append("archivo")
+                else:  # audio
+                    text_to_store = f"[{room_key}] {frm} envió un audio: {fn}\n"
+                    tags_to_apply.append("info")
 
         elif action == "private":
             frm = msg.get("from")
@@ -257,7 +481,13 @@ class ClienteChatUDP:
             if mt in ("text", "emoji"):
                 text_to_store = f"[PRIVADO] {frm}: {payload}\n"
             
-            elif mt in ("sticker", "audio"):
+            elif mt == "sticker":
+                nombre = payload.get("nombre", "Sticker")
+                sticker_ascii = payload.get("sticker", "")
+                text_to_store = f"[PRIVADO] {frm} envió un sticker: {nombre}\n{sticker_ascii}"
+                tags_to_apply.append("sticker")
+            
+            elif mt in ("file", "audio"):
                 fn = payload.get("filename", f"priv_{int(datetime.utcnow().timestamp())}.dat")
                 b64 = payload.get("data")
                 file_key = f"[PRIV] {frm} - {fn} ({datetime.now().strftime('%H:%M:%S')})"
@@ -266,8 +496,13 @@ class ClienteChatUDP:
                     self.file_cache[file_key] = (fn, b64)
                 
                 self.ventana.after(0, lambda: self.lista_files.insert(tk.END, file_key))
-                text_to_store = f"[PRIVADO] {frm} envió un {mt}: {fn}\n"
-                tags_to_apply.append("info")
+                
+                if mt == "file":
+                    text_to_store = f"[PRIVADO] {frm} envió un archivo: {fn}\n"
+                    tags_to_apply.append("archivo")
+                else:  # audio
+                    text_to_store = f"[PRIVADO] {frm} envió un audio: {fn}\n"
+                    tags_to_apply.append("info")
             
             self.ventana.after(0, self.rebuild_room_list_gui)
         
@@ -281,7 +516,6 @@ class ClienteChatUDP:
             text_to_store = f"[INFO] {msg}\n"
             tags_to_apply = ["info", "other"]
 
-        # --- Lógica de Historial (Sin cambios) ---
         if not room_key:
              if self.sala_actual:
                  room_key = self.sala_actual
@@ -297,10 +531,6 @@ class ClienteChatUDP:
             
             if room_key == self.sala_actual:
                 self.ventana.after(0, lambda: self.mostrar_mensaje(clean_text, tags_to_apply))
-
-    # ---
-    # Sección de Acciones de GUI
-    # ---
 
     def mostrar_mensaje(self, mensaje, tags=None): 
         self.area_mensajes.config(state='normal')
@@ -427,8 +657,6 @@ class ClienteChatUDP:
         except Exception as e:
             messagebox.showerror("Error Inesperado", f"Ocurrió un error al guardar: {e}")
 
-    # --- Funciones de manejo de sala (Sin cambios) ---
-
     def crear_sala(self):
         nombre = simpledialog.askstring("Crear Sala", "Nombre de la sala:")
         if not nombre or nombre.startswith("priv_"):
@@ -448,7 +676,6 @@ class ClienteChatUDP:
         
         self.area_mensajes.yview(tk.END)
         self.area_mensajes.config(state='disabled')
-
 
     def actualizar_salas_publicas(self):
         self.send_json({"action": "list_rooms", "username": self.username, "timestamp": now_iso()})
@@ -486,7 +713,7 @@ class ClienteChatUDP:
         
         self.area_mensajes.config(state='normal')
         self.area_mensajes.delete(1.0, tk.END)
-        self.area_mensajes.config(state='disabled')
+        self.area_mensajes.config(state='disabled')  # CORREGIDO: comilla simple
         
         self.current_users_in_room = []
         self.rebuild_user_list_gui()
@@ -501,10 +728,6 @@ class ClienteChatUDP:
                     del self.room_histories[sala]
             self.actualizar_salas_publicas()
 
-    # ---
-    # Sección de Envío
-    # ---
-
     def enviar_mensaje(self):
         texto = self.entry_mensaje.get().strip()
         if not texto:
@@ -515,7 +738,6 @@ class ClienteChatUDP:
             
         obj = {}
         if self.sala_actual.startswith("priv_"):
-            # --- Enviar como MENSAJE PRIVADO ---
             try:
                 user_pair = self.sala_actual.split('_', 1)[1]
                 user1, user2 = user_pair.split('-')
@@ -527,52 +749,40 @@ class ClienteChatUDP:
                 messagebox.showerror("Error", f"No se pudo enviar el mensaje privado: {e}")
                 return
             
-            # --- Eco local para privados ---
             clean_text = f"[PRIVADO] {self.username}: {texto}"
             tags = ["privado", "me"]
             with self.history_lock:
                 if self.sala_actual not in self.room_histories:
                     self.room_histories[self.sala_actual] = []
-                self.room_histories[self.sala_actual].append( (clean_text, tags) )
+                self.room_histories[self.sala_actual].append((clean_text, tags))
             self.mostrar_mensaje(clean_text, tags)
 
         else:
-            # --- Enviar como MENSAJE DE SALA ---
             obj = {"action": "message", "username": self.username, "room": self.sala_actual,
                    "msg_type": "text", "payload": texto, "timestamp": now_iso()}
         
         self.send_json(obj)
         self.entry_mensaje.delete(0, tk.END)
 
-    # --- Funciones de grabación y envío ---
-    
-    def enviar_sticker(self):
-        # Sticker solo abre el diálogo de archivo
-        self._enviar_archivo_helper("sticker")
-
     def toggle_audio_recording(self):
-        """Inicia o detiene la grabación de audio."""
         if self.is_recording:
             self.stop_recording()
         else:
             self.start_recording()
 
     def start_recording(self):
-        """Prepara e inicia el hilo de grabación."""
         if not self.sala_actual:
             messagebox.showinfo("Info", "Únete a una sala primero para grabar audio.")
             return
             
         self.is_recording = True
         self.btn_audio.config(text="STOP ◼️")
-        self.audio_frames = [] 
+        self.audio_frames = []
         
-        # Iniciar hilo de grabación
         t = threading.Thread(target=self._record_loop, daemon=True)
         t.start()
         
     def _record_loop(self):
-        """Función que corre en un hilo separado para grabar audio."""
         try:
             self.audio_stream = self.pyaudio_instance.open(format=FORMAT,
                                                            channels=CHANNELS,
@@ -590,7 +800,6 @@ class ClienteChatUDP:
             self.is_recording = False
             
         finally:
-            # Limpieza del stream
             if self.audio_stream:
                 self.audio_stream.stop_stream()
                 self.audio_stream.close()
@@ -604,7 +813,6 @@ class ClienteChatUDP:
                     wf.setframerate(RATE)
                     wf.writeframes(b''.join(self.audio_frames))
                     wf.close()
-                    # Avisar al hilo principal que el archivo está listo para el prompt
                     self.ventana.after(0, self.prompt_to_send_audio)
                 except Exception as e:
                     print(f"Error al guardar .wav temporal: {e}")
@@ -613,39 +821,32 @@ class ClienteChatUDP:
                 print("No se grabaron frames de audio.")
 
     def stop_recording(self):
-        """Avisa al hilo de grabación que se detenga y cambia el botón."""
         self.is_recording = False 
         self.btn_audio.config(text="🎙️ Grabar")
         
     def prompt_to_send_audio(self):
-        """Pregunta al usuario si quiere enviar el audio recién grabado."""
         if not os.path.exists(TEMP_AUDIO_FILENAME):
             print("El archivo de audio temporal no existe (no se grabó nada).")
             return
 
         try:
-            # Preguntar al usuario
             answer = messagebox.askyesno(
                 "Enviar Grabación",
                 "Grabación de audio finalizada. ¿Deseas enviarla?"
             )
 
-            if answer: # Si 'Yes'
-                # Enviar el archivo
+            if answer:
                 self._enviar_archivo_helper("audio", filepath=TEMP_AUDIO_FILENAME)
-            else: # Si 'No'
+            else:
                 print("Envío de audio cancelado por el usuario.")
 
         finally:
-            # Borrar el archivo temporal sin importar la respuesta
             try:
                 os.remove(TEMP_AUDIO_FILENAME)
             except Exception as e:
                 print(f"No se pudo borrar el archivo temporal: {e}")
             
-    # --- CORRECCIÓN 3: 'enviar_archivo_helper' ahora hace eco local SIEMPRE ---
     def _enviar_archivo_helper(self, msg_type, filepath=None):
-        """Función auxiliar para enviar stickers o audio."""
         path = filepath
         
         if not path:
@@ -665,12 +866,10 @@ class ClienteChatUDP:
             payload = {"filename": os.path.basename(path), "data": b64}
             obj = {}
             
-            # Preparar el eco local
             clean_text = ""
             tags = []
 
             if self.sala_actual.startswith("priv_"):
-                # --- Enviar como ARCHIVO PRIVADO ---
                 try:
                     user_pair = self.sala_actual.split('_', 1)[1]
                     user1, user2 = user_pair.split('-')
@@ -687,21 +886,18 @@ class ClienteChatUDP:
                     return
                 
             else:
-                # --- Enviar como ARCHIVO DE SALA ---
                 obj = {"action": "message", "username": self.username, "room": self.sala_actual,
                        "msg_type": msg_type, "payload": payload, "timestamp": now_iso()}
                 
                 clean_text = f"[{self.sala_actual}] {self.username} envió un {msg_type}: {os.path.basename(path)}"
                 tags = ["me", "info"]
             
-            # --- Realizar el eco local (para salas públicas Y privadas) ---
             with self.history_lock:
                 if self.sala_actual not in self.room_histories:
                     self.room_histories[self.sala_actual] = []
-                self.room_histories[self.sala_actual].append( (clean_text, tags) )
+                self.room_histories[self.sala_actual].append((clean_text, tags))
             self.mostrar_mensaje(clean_text, tags)
             
-            # Enviar el mensaje
             self.send_json(obj)
             
         except Exception as e:
@@ -716,7 +912,6 @@ class ClienteChatUDP:
             pass
         self.running = False
         
-        # --- Limpieza de PyAudio ---
         try:
             self.pyaudio_instance.terminate()
         except Exception as e:
